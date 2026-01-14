@@ -1,15 +1,8 @@
 {
-  "name": "mindstream-banafa",
-  "version": "3.1.0",
+  "name": "mindstream-banafa-v4",
+  "version": "4.1.0",
   "private": true,
-  "description": "AI-powered mental clarity app - No-Build Architecture",
-  "scripts": {
-    "dev": "vercel dev"
-  },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0"
-  },
-  "devDependencies": {
-    "vercel": "^32.0.0"
+    "node-fetch": "^3.3.1"
   }
 }
