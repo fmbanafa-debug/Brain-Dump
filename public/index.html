@@ -15,6 +15,9 @@
         .glass { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); }
         .custom-scroll::-webkit-scrollbar { width: 4px; }
         .custom-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
     </style>
 </head>
 <body>
@@ -30,18 +33,17 @@
         };
 
         // --- AI Throttling Logic ---
-        const apiKey = ""; // Set in Vercel environment
+        const apiKey = ""; // Execution environment provides the key
         let lastCallTimestamp = 0;
-        const MIN_CALL_GAP_MS = 4500; // 4.5s buffer for Free Tier safety
+        const MIN_CALL_GAP_MS = 4500; 
 
-        async function callGemini(prompt, systemInstruction = "") {
+        async function callGemini(prompt, systemInstruction = "", isJson = false) {
             const now = Date.now();
             if (now - lastCallTimestamp < MIN_CALL_GAP_MS) {
                 const wait = Math.ceil((MIN_CALL_GAP_MS - (now - lastCallTimestamp)) / 1000);
-                throw new Error(`AI Rate Limit: Please wait ${wait}s.`);
+                throw new Error(`Rate limit: Please wait ${wait}s before next AI request.`);
             }
 
-            // In local/preview we fetch direct. In Vercel, this should point to your /api/chat proxy.
             const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
             
             const payload = {
@@ -49,17 +51,33 @@
                 systemInstruction: { parts: [{ text: systemInstruction }] }
             };
 
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            // Enhanced for structured JSON output to avoid "AI busy" errors on parsing
+            if (isJson) {
+                payload.generationConfig = {
+                    responseMimeType: "application/json"
+                };
+            }
 
-            lastCallTimestamp = Date.now();
-            if (!response.ok) throw new Error('AI Service busy. Please try again.');
-            
-            const data = await response.json();
-            return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                lastCallTimestamp = Date.now();
+                
+                if (!response.ok) {
+                    const errorBody = await response.json().catch(() => ({}));
+                    const msg = errorBody?.error?.message || "AI Service busy or key missing.";
+                    throw new Error(msg);
+                }
+                
+                const data = await response.json();
+                return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            } catch (err) {
+                throw new Error(err.message || "Network error. Please try again.");
+            }
         }
 
         // --- Components ---
@@ -69,7 +87,7 @@
             </div>
         );
 
-        const Button = ({ children, onClick, variant = 'primary', loading = false, disabled = false }) => {
+        const Button = ({ children, onClick, variant = 'primary', loading = false, disabled = false, className = "" }) => {
             const styles = {
                 primary: "bg-indigo-600 text-white shadow-lg shadow-indigo-100 hover:bg-indigo-700",
                 secondary: "bg-slate-100 text-slate-700 hover:bg-slate-200",
@@ -80,7 +98,7 @@
                 <button 
                     onClick={onClick} 
                     disabled={loading || disabled}
-                    className={`px-5 py-2.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50 ${styles[variant]}`}
+                    className={`px-5 py-2.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50 ${styles[variant]} ${className}`}
                 >
                     {loading ? <Icon name="loader-2" className="animate-spin" size={16} /> : children}
                 </button>
@@ -90,16 +108,15 @@
         // --- Main App ---
         const App = () => {
             const [items, setItems] = useState(() => JSON.parse(localStorage.getItem('mindstream_v4') || '[]'));
-            const [view, setView] = useState('dashboard'); // dashboard, capture, sift, table
+            const [view, setView] = useState('dashboard');
             const [inputValue, setInputValue] = useState('');
             const [activeSiftIndex, setActiveSiftIndex] = useState(0);
             const [aiLoading, setAiLoading] = useState(false);
             const [toast, setToast] = useState(null);
             const [organizedData, setOrganizedData] = useState(null);
-            const [editingId, setEditingId] = useState(null);
 
             useEffect(() => localStorage.setItem('mindstream_v4', JSON.stringify(items)), [items]);
-            useEffect(() => { if(toast) setTimeout(() => setToast(null), 4000); }, [toast]);
+            useEffect(() => { if(toast) { const t = setTimeout(() => setToast(null), 5000); return () => clearTimeout(t); } }, [toast]);
 
             const stats = useMemo(() => ({
                 unsifted: items.filter(i => i.type === 'pending'),
@@ -107,7 +124,7 @@
                 thoughts: items.filter(i => i.type === 'thought')
             }), [items]);
 
-            // CRUD Handlers
+            // Handlers
             const addItem = (e) => {
                 e.preventDefault();
                 if (!inputValue.trim()) return;
@@ -115,50 +132,49 @@
                 setInputValue('');
             };
 
-            const updateItem = (id, newText) => {
-                setItems(items.map(i => i.id === id ? { ...i, text: newText } : i));
-                setEditingId(null);
-            };
-
             const sift = (id, type) => {
                 setItems(items.map(i => i.id === id ? { ...i, type } : i));
-                if (activeSiftIndex >= stats.unsifted.length - 1) setView('dashboard');
+                if (stats.unsifted.length <= 1) setView('dashboard');
             };
 
             const deleteItem = (id) => setItems(items.filter(i => i.id !== id));
 
-            // AI Empowerment
+            // AI Empowerment: The Strategic Grid
             const generateTable = async () => {
-                if (items.length === 0) return;
+                if (items.length === 0) {
+                    setToast({ msg: "Please add some items first!", type: "info" });
+                    return;
+                }
                 setAiLoading(true);
                 try {
                     const dataStr = items.map(i => `${i.type}: ${i.text}`).join('\n');
-                    const prompt = `Analyze these items and organize them into a detailed JSON array.
+                    const prompt = `Organize these items into a detailed strategic table.
                     Items:
                     ${dataStr}
                     
-                    Return ONLY a JSON array with objects containing: 
-                    "item": (original text), 
-                    "category": (e.g. Health, Work, Personal), 
-                    "type": (Task or Thought), 
-                    "priority": (High/Med/Low), 
-                    "action": (If Task: Next Step. If Thought: Mental Reframe).`;
+                    Respond with a JSON array of objects. Each object must have: 
+                    "item": original text, 
+                    "category": logical grouping, 
+                    "type": "Task" or "Thought", 
+                    "priority": "High", "Med", or "Low", 
+                    "action": if Task: specific next step; if Thought: philosophical reframe.`;
                     
-                    const res = await callGemini(prompt, "You are a cognitive organization expert. Return valid JSON only.");
-                    const cleaned = res.replace(/```json|```/g, "").trim();
-                    setOrganizedData(JSON.parse(cleaned));
+                    const res = await callGemini(prompt, "You are a senior cognitive organizer. Output valid JSON array ONLY.", true);
+                    setOrganizedData(JSON.parse(res));
                     setView('table');
                 } catch (e) {
-                    setToast(e.message);
+                    setToast({ msg: e.message, type: "error" });
                 } finally { setAiLoading(false); }
             };
 
             return (
                 <div className="min-h-screen flex flex-col">
-                    {/* Toast */}
+                    {/* Enhanced Toast */}
                     {toast && (
-                        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[100] bg-rose-600 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-2 animate-bounce">
-                            <Icon name="alert-circle" size={18} /> {toast}
+                        <div className={`fixed top-24 left-1/2 -translate-x-1/2 z-[100] ${toast.type === 'error' ? 'bg-rose-600' : 'bg-indigo-600'} text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-fade-in border border-white/20`}>
+                            <Icon name={toast.type === 'error' ? "alert-circle" : "info"} size={20} />
+                            <span className="font-bold text-sm">{toast.msg}</span>
+                            <button onClick={() => setToast(null)} className="ml-2 opacity-70 hover:opacity-100"><Icon name="x" size={16} /></button>
                         </div>
                     )}
 
@@ -175,8 +191,8 @@
                         </div>
 
                         <div className="flex items-center gap-2">
-                            <Button variant={view === 'dashboard' ? 'primary' : 'ghost'} onClick={() => setView('dashboard')}><Icon name="layout-dashboard" /></Button>
-                            <Button variant={view === 'capture' ? 'primary' : 'ghost'} onClick={() => setView('capture')}><Icon name="plus" /></Button>
+                            <Button variant={view === 'dashboard' ? 'primary' : 'ghost'} onClick={() => setView('dashboard')} className="w-11 h-11 p-0 rounded-xl"><Icon name="layout-dashboard" /></Button>
+                            <Button variant={view === 'capture' ? 'primary' : 'ghost'} onClick={() => setView('capture')} className="w-11 h-11 p-0 rounded-xl"><Icon name="plus" /></Button>
                         </div>
                     </nav>
 
@@ -184,10 +200,10 @@
                         
                         {/* VIEW: CAPTURE */}
                         {view === 'capture' && (
-                            <div className="max-w-2xl mx-auto space-y-10 animate-in slide-in-from-bottom-6 duration-500">
+                            <div className="max-w-2xl mx-auto space-y-10 animate-fade-in">
                                 <div className="text-center space-y-2">
                                     <h2 className="text-4xl font-black text-slate-900">Brain Dump</h2>
-                                    <p className="text-slate-500 font-medium">Record every worry, task, or thought without filter.</p>
+                                    <p className="text-slate-500 font-medium">Offload everything in your head right now.</p>
                                 </div>
                                 <form onSubmit={addItem} className="relative">
                                     <input 
@@ -203,7 +219,7 @@
                                 </form>
                                 <div className="space-y-4">
                                     <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest px-4 flex justify-between">
-                                        Recent Stream <span>{stats.unsifted.length} Process Pending</span>
+                                        Pending List <span>{stats.unsifted.length} entries</span>
                                     </h3>
                                     {stats.unsifted.map(item => (
                                         <Card key={item.id} className="p-5 flex items-center gap-4 group">
@@ -215,7 +231,7 @@
                                 </div>
                                 {stats.unsifted.length > 0 && (
                                     <Button onClick={() => setView('sift')} className="w-full h-16 rounded-[2rem] text-lg">
-                                        Begin Sifting & Analysis <Icon name="arrow-right" />
+                                        Start Sifting <Icon name="arrow-right" />
                                     </Button>
                                 )}
                             </div>
@@ -223,38 +239,34 @@
 
                         {/* VIEW: SIFTING */}
                         {view === 'sift' && stats.unsifted[activeSiftIndex] && (
-                            <div className="max-w-xl mx-auto space-y-10 animate-in zoom-in-95 duration-300">
-                                <div className="flex justify-between items-center text-xs font-black text-slate-400 uppercase tracking-widest">
-                                    <span>Processing Stream</span>
-                                    <span>{activeSiftIndex + 1} / {stats.unsifted.length}</span>
-                                </div>
+                            <div className="max-w-xl mx-auto space-y-10 animate-fade-in">
                                 <Card className="p-12 text-center space-y-10 border-indigo-100 relative">
-                                    <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-3xl flex items-center justify-center mx-auto shadow-inner">
-                                        <Icon name="lightbulb" size={40} />
+                                    <div className="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto">
+                                        <Icon name="lightbulb" size={32} />
                                     </div>
-                                    <h2 className="text-3xl font-bold italic text-slate-800 leading-tight">"{stats.unsifted[activeSiftIndex].text}"</h2>
-                                    <div className="grid grid-cols-1 gap-4">
-                                        <button onClick={() => sift(stats.unsifted[activeSiftIndex].id, 'task')} className="p-6 border-2 border-slate-100 rounded-3xl hover:border-indigo-500 flex items-center gap-6 group transition-all text-left">
-                                            <div className="p-4 bg-indigo-50 text-indigo-600 rounded-2xl group-hover:bg-indigo-600 group-hover:text-white transition-all"><Icon name="check-circle" size={24} /></div>
-                                            <div className="flex-1"><b className="block text-slate-900">Actionable Task</b><span className="text-xs text-slate-400">Needs physical execution.</span></div>
+                                    <h2 className="text-2xl font-bold italic text-slate-800 leading-tight">"{stats.unsifted[activeSiftIndex].text}"</h2>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <button onClick={() => sift(stats.unsifted[activeSiftIndex].id, 'task')} className="p-6 border-2 border-slate-100 rounded-3xl hover:border-indigo-500 flex flex-col items-center gap-3 group transition-all">
+                                            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl group-hover:bg-indigo-600 group-hover:text-white transition-all"><Icon name="check-circle" size={20} /></div>
+                                            <b className="text-slate-900">Task</b>
                                         </button>
-                                        <button onClick={() => sift(stats.unsifted[activeSiftIndex].id, 'thought')} className="p-6 border-2 border-slate-100 rounded-3xl hover:border-emerald-500 flex items-center gap-6 group transition-all text-left">
-                                            <div className="p-4 bg-emerald-50 text-emerald-600 rounded-2xl group-hover:bg-emerald-600 group-hover:text-white transition-all"><Icon name="brain" size={24} /></div>
-                                            <div className="flex-1"><b className="block text-slate-900">Mental Thought</b><span className="text-xs text-slate-400">Needs mindful processing.</span></div>
+                                        <button onClick={() => sift(stats.unsifted[activeSiftIndex].id, 'thought')} className="p-6 border-2 border-slate-100 rounded-3xl hover:border-emerald-500 flex flex-col items-center gap-3 group transition-all">
+                                            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl group-hover:bg-emerald-600 group-hover:text-white transition-all"><Icon name="brain" size={20} /></div>
+                                            <b className="text-slate-900">Thought</b>
                                         </button>
                                     </div>
-                                    <button onClick={() => deleteItem(stats.unsifted[activeSiftIndex].id)} className="text-xs font-bold text-slate-300 hover:text-rose-500 underline">Discard this entry</button>
+                                    <div className="text-xs font-bold text-slate-400">Entry {activeSiftIndex + 1} of {stats.unsifted.length}</div>
                                 </Card>
                             </div>
                         )}
 
                         {/* VIEW: DASHBOARD */}
                         {view === 'dashboard' && (
-                            <div className="space-y-12 animate-in fade-in duration-500">
+                            <div className="space-y-12 animate-fade-in">
                                 <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
                                     <div>
                                         <h2 className="text-4xl font-black text-slate-900">System Hub</h2>
-                                        <p className="text-slate-500 font-medium">Clear division between the doing and the being.</p>
+                                        <p className="text-slate-500 font-medium">Cognitive organization at your fingertips.</p>
                                     </div>
                                     <div className="flex gap-3">
                                         <Button variant="accent" loading={aiLoading} onClick={generateTable}>
@@ -268,40 +280,36 @@
                                     {/* Action Queue */}
                                     <div className="space-y-6">
                                         <h3 className="flex items-center gap-2 font-black text-slate-400 uppercase tracking-widest text-sm">
-                                            <Icon name="target" size={16} /> Action Queue ({stats.tasks.length})
+                                            <Icon name="target" size={16} /> Tasks ({stats.tasks.length})
                                         </h3>
                                         <div className="space-y-3">
                                             {stats.tasks.map(t => (
                                                 <Card key={t.id} className="p-5 flex items-center gap-4 group">
                                                     <button onClick={() => deleteItem(t.id)} className="w-6 h-6 rounded-full border-2 border-slate-200 hover:bg-emerald-500 hover:border-emerald-500 transition-all"></button>
                                                     <span className="flex-1 font-semibold text-slate-700">{t.text}</span>
-                                                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all">
-                                                        <button onClick={() => deleteItem(t.id)} className="text-slate-300 hover:text-rose-500"><Icon name="trash-2" size={16}/></button>
-                                                    </div>
+                                                    <button onClick={() => deleteItem(t.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500 transition-all"><Icon name="trash-2" size={16}/></button>
                                                 </Card>
                                             ))}
-                                            {stats.tasks.length === 0 && <div className="p-10 text-center text-slate-300 italic border-2 border-dashed border-slate-100 rounded-3xl">No tasks active.</div>}
+                                            {stats.tasks.length === 0 && <div className="p-10 text-center text-slate-300 italic border-2 border-dashed border-slate-100 rounded-3xl">No tasks yet.</div>}
                                         </div>
                                     </div>
 
                                     {/* Mental Garden */}
                                     <div className="space-y-6">
                                         <h3 className="flex items-center gap-2 font-black text-slate-400 uppercase tracking-widest text-sm">
-                                            <Icon name="message-circle" size={16} /> Mental Garden ({stats.thoughts.length})
+                                            <Icon name="message-circle" size={16} /> Thoughts ({stats.thoughts.length})
                                         </h3>
                                         <div className="space-y-3">
                                             {stats.thoughts.map(t => (
                                                 <Card key={t.id} className="p-6 bg-slate-50 border-slate-100 group">
-                                                    <div className="flex justify-between items-start mb-4">
-                                                        <p className="font-serif italic text-slate-600 text-lg">"{t.text}"</p>
+                                                    <div className="flex justify-between items-start mb-2">
+                                                        <p className="font-serif italic text-slate-600 text-lg leading-snug">"{t.text}"</p>
                                                         <button onClick={() => deleteItem(t.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500 transition-all"><Icon name="trash-2" size={16}/></button>
                                                     </div>
-                                                    <div className="flex items-center gap-2 text-[10px] font-black uppercase text-emerald-600 bg-emerald-50 w-fit px-2 py-1 rounded">
-                                                        <Icon name="shield-check" size={10} /> Mindful Observation
-                                                    </div>
+                                                    <div className="text-[10px] font-black uppercase text-emerald-600">Mindful Awareness</div>
                                                 </Card>
                                             ))}
-                                            {stats.thoughts.length === 0 && <div className="p-10 text-center text-slate-300 italic border-2 border-dashed border-slate-100 rounded-3xl">Mental landscape is clear.</div>}
+                                            {stats.thoughts.length === 0 && <div className="p-10 text-center text-slate-300 italic border-2 border-dashed border-slate-100 rounded-3xl">Garden is clear.</div>}
                                         </div>
                                     </div>
                                 </div>
@@ -310,13 +318,13 @@
 
                         {/* VIEW: STRATEGIC GRID (Table) */}
                         {view === 'table' && organizedData && (
-                            <div className="space-y-8 animate-in fade-in zoom-in-95 duration-500">
+                            <div className="space-y-8 animate-fade-in">
                                 <div className="flex items-center justify-between">
                                     <div>
                                         <h2 className="text-3xl font-black text-slate-900">Strategic Grid</h2>
-                                        <p className="text-slate-500">AI-powered categorization and reframing.</p>
+                                        <p className="text-slate-500">Structured analysis of your current state.</p>
                                     </div>
-                                    <Button variant="secondary" onClick={() => setView('dashboard')}><Icon name="x" /> Close Grid</Button>
+                                    <Button variant="secondary" onClick={() => setView('dashboard')}><Icon name="x" /> Back to Hub</Button>
                                 </div>
 
                                 <Card className="overflow-hidden border-none shadow-2xl">
@@ -324,32 +332,31 @@
                                         <table className="w-full text-left border-collapse">
                                             <thead>
                                                 <tr className="bg-slate-900 text-white">
-                                                    <th className="p-5 text-xs font-black uppercase tracking-widest">Type</th>
-                                                    <th className="p-5 text-xs font-black uppercase tracking-widest">Original Item</th>
-                                                    <th className="p-5 text-xs font-black uppercase tracking-widest">Context</th>
                                                     <th className="p-5 text-xs font-black uppercase tracking-widest">Priority</th>
-                                                    <th className="p-5 text-xs font-black uppercase tracking-widest">AI Strategic Action</th>
+                                                    <th className="p-5 text-xs font-black uppercase tracking-widest">Item</th>
+                                                    <th className="p-5 text-xs font-black uppercase tracking-widest">Category</th>
+                                                    <th className="p-5 text-xs font-black uppercase tracking-widest">Strategic Insight / Action</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
                                                 {organizedData.map((row, idx) => (
                                                     <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                                                         <td className="p-5">
-                                                            <span className={`text-[10px] font-black px-2 py-1 rounded-md uppercase ${row.type === 'Task' ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                                                                {row.type}
-                                                            </span>
-                                                        </td>
-                                                        <td className="p-5 text-sm font-semibold text-slate-800">{row.item}</td>
-                                                        <td className="p-5 text-xs text-slate-500 font-medium">{row.category}</td>
-                                                        <td className="p-5">
-                                                            <span className={`text-xs font-bold ${row.priority === 'High' ? 'text-rose-500' : 'text-slate-400'}`}>
+                                                            <span className={`text-[10px] font-black px-2 py-1 rounded-md uppercase ${
+                                                                row.priority === 'High' ? 'bg-rose-100 text-rose-700' : 
+                                                                row.priority === 'Med' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'
+                                                            }`}>
                                                                 {row.priority}
                                                             </span>
                                                         </td>
+                                                        <td className="p-5 text-sm">
+                                                            <div className="font-bold text-slate-800">{row.item}</div>
+                                                            <div className={`text-[9px] font-black uppercase mt-1 ${row.type === 'Task' ? 'text-indigo-500' : 'text-emerald-500'}`}>{row.type}</div>
+                                                        </td>
+                                                        <td className="p-5 text-xs text-slate-500 font-bold uppercase tracking-wider">{row.category}</td>
                                                         <td className="p-5">
-                                                            <div className="flex items-start gap-2 bg-slate-100/50 p-3 rounded-xl border border-slate-200/50">
-                                                                <Icon name={row.type === 'Task' ? 'zap' : 'sparkles'} size={14} className="mt-1 text-indigo-500 shrink-0" />
-                                                                <span className="text-xs text-slate-700 font-medium leading-relaxed">{row.action}</span>
+                                                            <div className="text-sm text-slate-700 font-medium leading-relaxed bg-white p-3 rounded-xl border border-slate-200">
+                                                                {row.action}
                                                             </div>
                                                         </td>
                                                     </tr>
@@ -367,32 +374,23 @@
                         <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-start md:items-center gap-8">
                             <div>
                                 <div className="flex items-center gap-2 mb-2">
-                                    <span className="font-black text-slate-900 text-lg">MindStream</span>
-                                    <span className="bg-indigo-50 text-indigo-600 text-[10px] font-black px-2 py-0.5 rounded uppercase">v4.0 Final</span>
+                                    <span className="font-black text-slate-900 text-lg tracking-tighter">MindStream</span>
+                                    <span className="bg-indigo-50 text-indigo-600 text-[10px] font-black px-2 py-0.5 rounded uppercase">v4.1 Pro</span>
                                 </div>
                                 <p className="text-slate-400 text-sm">
                                     Contribution & Ownership: <span className="text-slate-900 font-bold">Banafa</span>
                                 </p>
                             </div>
                             <div className="flex flex-wrap gap-4">
-                                <a href="mailto:fmbanafa@gmail.com" className="group flex items-center gap-3 bg-slate-50 border border-slate-100 px-5 py-3 rounded-2xl hover:border-indigo-300 transition-all">
-                                    <div className="w-8 h-8 bg-white shadow-sm rounded-xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600"><Icon name="mail" size={16} /></div>
-                                    <div className="text-left">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Email</p>
-                                        <p className="text-sm font-bold text-slate-700">fmbanafa@gmail.com</p>
-                                    </div>
+                                <a href="mailto:fmbanafa@gmail.com" className="flex items-center gap-3 bg-slate-50 border border-slate-100 px-5 py-3 rounded-2xl hover:border-indigo-300 transition-all">
+                                    <Icon name="mail" size={16} className="text-slate-400" />
+                                    <span className="text-sm font-bold text-slate-700">fmbanafa@gmail.com</span>
                                 </a>
-                                <a href="tel:+966581818136" className="group flex items-center gap-3 bg-slate-50 border border-slate-100 px-5 py-3 rounded-2xl hover:border-emerald-300 transition-all">
-                                    <div className="w-8 h-8 bg-white shadow-sm rounded-xl flex items-center justify-center text-slate-400 group-hover:text-emerald-600"><Icon name="phone" size={16} /></div>
-                                    <div className="text-left">
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none mb-1">Mobile</p>
-                                        <p className="text-sm font-bold text-slate-700">+966 581 818 136</p>
-                                    </div>
+                                <a href="tel:+966581818136" className="flex items-center gap-3 bg-slate-50 border border-slate-100 px-5 py-3 rounded-2xl hover:border-emerald-300 transition-all">
+                                    <Icon name="phone" size={16} className="text-slate-400" />
+                                    <span className="text-sm font-bold text-slate-700">+966 581 818 136</span>
                                 </a>
                             </div>
-                        </div>
-                        <div className="max-w-5xl mx-auto mt-12 pt-8 border-t border-slate-100 text-center">
-                            <p className="text-[10px] font-black text-slate-300 uppercase tracking-[0.3em]">Encrypted Local Persistence • AI Rate-Throttled Engine</p>
                         </div>
                     </footer>
                 </div>
