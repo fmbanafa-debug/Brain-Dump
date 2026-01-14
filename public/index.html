@@ -222,11 +222,26 @@
                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
                                     <div className="space-y-6">
                                         <h3 className="flex items-center gap-2 font-black text-slate-400 uppercase tracking-widest text-sm"><Icon name="target" size={16} /> Tasks ({stats.tasks.length})</h3>
-                                        {stats.tasks.map(t => <Card key={t.id} className="p-5 flex items-center gap-4 group"><button onClick={() => deleteItem(t.id)} className="w-6 h-6 rounded-full border-2 border-slate-200 hover:bg-emerald-500 transition-all"></button><span className="flex-1 font-semibold text-slate-700">{t.text}</span></button></Card>)}
+                                        <div className="space-y-3">
+                                            {stats.tasks.map(t => (
+                                                <Card key={t.id} className="p-5 flex items-center gap-4 group">
+                                                    <button onClick={() => deleteItem(t.id)} className="w-6 h-6 rounded-full border-2 border-slate-200 hover:bg-emerald-500 transition-all"></button>
+                                                    <span className="flex-1 font-semibold text-slate-700">{t.text}</span>
+                                                </Card>
+                                            ))}
+                                            {stats.tasks.length === 0 && <p className="text-center py-8 text-slate-300 italic">No active tasks.</p>}
+                                        </div>
                                     </div>
                                     <div className="space-y-6">
                                         <h3 className="flex items-center gap-2 font-black text-slate-400 uppercase tracking-widest text-sm"><Icon name="message-circle" size={16} /> Thoughts ({stats.thoughts.length})</h3>
-                                        {stats.thoughts.map(t => <Card key={t.id} className="p-6 bg-slate-50 border-slate-100"><p className="font-serif italic text-slate-600 text-lg">"{t.text}"</p></Card>)}
+                                        <div className="space-y-3">
+                                            {stats.thoughts.map(t => (
+                                                <Card key={t.id} className="p-6 bg-slate-50 border-slate-100">
+                                                    <p className="font-serif italic text-slate-600 text-lg">"{t.text}"</p>
+                                                </Card>
+                                            ))}
+                                            {stats.thoughts.length === 0 && <p className="text-center py-8 text-slate-300 italic">No thoughts recorded.</p>}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
