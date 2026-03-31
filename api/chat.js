@@ -11,6 +11,13 @@ export default async function handler(req, res) {
         return res.status(500).json({ error: 'Server configuration error: API Key missing' });
     }
 
+    const { userQuery, systemPrompt } = req.body;
+  
+  /**
+   * Using 'gemini-flash-latest' alias. 
+   * This points to the current stable Flash model (e.g., 1.5 or 2.0) 
+   * and ensures the app doesn't break when specific versions are deprecated.
+   */
     const modelId = "gemini-flash-latest";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`
 
