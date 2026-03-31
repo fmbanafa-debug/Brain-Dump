@@ -11,6 +11,7 @@ export default async function handler(req, res) {
         return res.status(500).json({ error: 'Server configuration error: API Key missing' });
     }
 
+    const modelId = "gemini-flash-latest";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`
 
     const payload = {
