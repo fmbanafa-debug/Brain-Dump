@@ -1,6 +1,55 @@
-// Updated code to remove duplicate variable extraction on line 14
+// Vercel Serverless Function: api/chat.js
+export default async function handler(req, res) {
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
 
-function someFunction() {
-    const value = extractValue(); // Original conflicting extraction
-    // Other function logic
+    const { prompt, systemInstruction, isJson } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ 
+      error: 'API key is missing. Ensure GEMINI_API_KEY is set in Vercel Environment Variables and redeploy.' 
+    });
+  }
+
+    /**
+   * Using 'gemini-flash-latest' alias. 
+   * This points to the current stable Flash model (e.g., 1.5 or 2.0) 
+   * and ensures the app doesn't break when specific versions are deprecated.
+   */
+    const modelId = "gemini-flash-latest"; 
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+
+    const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        systemInstruction: { parts: [{ text: systemInstruction }] }
+    };
+
+    // Support for the Strategic Grid JSON mode
+    if (isJson) {
+        payload.generationConfig = {
+            responseMimeType: "application/json"
+        };
+    }
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            return res.status(response.status).json({ 
+                error: data.error?.message || 'Upstream AI Service Error' 
+            });
+        }
+
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        res.status(200).json({ text });
+    } catch (error) {
+        res.status(500).json({ error: 'Communication failure with AI' });
+    }
 }
